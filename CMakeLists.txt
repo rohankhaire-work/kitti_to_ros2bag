@@ -1,5 +1,6 @@
 cmake_minimum_required(VERSION 3.8)
 project(kitti_to_ros2bag)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   add_compile_options(-O3 -Wall -Wextra -Wpedantic)
@@ -20,6 +21,7 @@ find_package(cv_bridge REQUIRED)
 find_package(pcl_conversions REQUIRED)
 find_package(OpenCV REQUIRED)
 find_package(PCL REQUIRED)
+find_package(geodesy REQUIRED)
 
 add_executable(kitti_to_ros2bag_node
   src/kitti_to_ros2bag_node.cpp
@@ -39,7 +41,8 @@ ament_target_dependencies(kitti_to_ros2bag_node PUBLIC
   tf2
   tf2_geometry_msgs
   cv_bridge
-  pcl_conversions)
+  pcl_conversions
+  geodesy)
 
 target_link_libraries(kitti_to_ros2bag_node PUBLIC
   opencv_imgcodecs

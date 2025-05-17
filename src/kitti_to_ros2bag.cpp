@@ -15,17 +15,17 @@
 // ROS header
 #include <tf2/utils.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
+#include <geometry_msgs/msg/transform_stamped.hpp>
 #include <cv_bridge/cv_bridge.h>
 #include <pcl_conversions/pcl_conversions.h>
+#include <tf2_msgs/msg/detail/tf_message__struct.hpp>
 
 // local header
 #include "kitti_to_ros2bag/kitti_to_ros2bag.hpp"
 
-
 using namespace std::chrono_literals;
 
-Kitti2BagNode::Kitti2BagNode()
-: Node("kitti2bag_node"), index_{0}
+Kitti2BagNode::Kitti2BagNode() : Node("kitti2bag_node"), index_{0}
 {
   kitti_path_ = declare_parameter("kitti_path", fs::path());
   data_folder_ = declare_parameter("data_folder", std::string());
@@ -36,8 +36,17 @@ Kitti2BagNode::Kitti2BagNode()
   get_filenames();
   get_all_timestamps();
 
+  // Get YAML file path
+  std::string share_dir
+    = ament_index_cpp::get_package_share_directory("kitti_to_ros2bag");
+  std::string yaml_path = share_dir + "/params/qos_overrides.yaml";
+
+  rosbag2_storage::StorageOptions storage_options;
+  storage_options.uri = output_bag_name;
+  storage_options.storage_id = "sqlite3";
+
   writer_ = std::make_unique<rosbag2_cpp::Writer>();
-  writer_->open(output_bag_name);
+  writer_->open(storage_options);
 
   timer_ = create_wall_timer(100ms, std::bind(&Kitti2BagNode::on_timer_callback, this));
 }
@@ -45,47 +54,64 @@ Kitti2BagNode::Kitti2BagNode()
 void Kitti2BagNode::on_timer_callback()
 {
   fs::path calib_file = kitti_path_ / calib_folder_ / "calib_cam_to_cam.txt";
+  fs::path tf_imu_velo_file = kitti_path_ / calib_folder_ / "calib_imu_to_velo.txt";
+  fs::path tf_velo_cam_file = kitti_path_ / calib_folder_ / "calib_velo_to_cam.txt";
   auto calib_flag = fs::exists(calib_file);
 
-  for (size_t i = 0; i < dirs_.size(); ++i) {
-    const std::string & dir = dirs_[i];
+  for(size_t i = 0; i < dirs_.size(); ++i)
+  {
+    const std::string &dir = dirs_[i];
     fs::path filename = kitti_path_ / data_folder_ / dir / "data" / filenames_[i][index_];
     rclcpp::Time timestamp = timestamps_[i][index_];
 
-    if (dir == "image_00") {
+    if(dir == "image_00")
+    {
       auto msg = convert_image_to_msg(filename, timestamp, "mono8", "cam0_link");
       writer_->write(msg, "kitti/camera/gray/left/image_raw", timestamp);
-      if (calib_flag) {
+      if(calib_flag)
+      {
         auto msg = convert_calib_to_msg(calib_file, timestamp, "0", "cam0_link");
-        // Have to add some offset to the timestamp, otherwise it will overwrite the previous message
+        // Have to add some offset to the timestamp, otherwise it will overwrite the
+        // previous message
         rclcpp::Time tmp = rclcpp::Time(timestamp.nanoseconds() + 10);
         writer_->write(msg, "kitti/camera/gray/left/camera_info", tmp);
       }
-    } else if (dir == "image_01") {
+    }
+    else if(dir == "image_01")
+    {
       auto msg = convert_image_to_msg(filename, timestamp, "mono8", "cam1_link");
       writer_->write(msg, "kitti/camera/gray/right/image_raw", timestamp);
-      if (calib_flag) {
+      if(calib_flag)
+      {
         auto msg = convert_calib_to_msg(calib_file, timestamp, "1", "cam1_link");
         rclcpp::Time tmp = rclcpp::Time(timestamp.nanoseconds() + 10);
         writer_->write(msg, "kitti/camera/gray/right/camera_info", tmp);
       }
-    } else if (dir == "image_02") {
+    }
+    else if(dir == "image_02")
+    {
       auto msg = convert_image_to_msg(filename, timestamp, "bgr8", "cam2_link");
       writer_->write(msg, "kitti/camera/color/left/image_raw", timestamp);
-      if (calib_flag) {
+      if(calib_flag)
+      {
         auto msg = convert_calib_to_msg(calib_file, timestamp, "2", "cam2_link");
         rclcpp::Time tmp = rclcpp::Time(timestamp.nanoseconds() + 10);
         writer_->write(msg, "kitti/camera/color/left/camera_info", tmp);
       }
-    } else if (dir == "image_03") {
+    }
+    else if(dir == "image_03")
+    {
       auto msg = convert_image_to_msg(filename, timestamp, "bgr8", "cam3_link");
       writer_->write(msg, "kitti/camera/color/right/image_raw", timestamp);
-      if (calib_flag) {
+      if(calib_flag)
+      {
         auto msg = convert_calib_to_msg(calib_file, timestamp, "3", "cam3_link");
         rclcpp::Time tmp = rclcpp::Time(timestamp.nanoseconds() + 10);
         writer_->write(msg, "kitti/camera/color/right/camera_info", tmp);
       }
-    } else if (dir == "oxts") {
+    }
+    else if(dir == "oxts")
+    {
       // parse the oxts data
       std::vector<std::string> oxts_parsed_array = parse_file_data(filename, " ");
 
@@ -99,10 +125,39 @@ void Kitti2BagNode::on_timer_callback()
       writer_->write(vel_msg, "kitti/oxts/gps/vel", tmp1);
 
       // write the IMU data to bag
-      auto img_msg = convert_oxts_to_imu_msg(oxts_parsed_array, timestamp);
+      auto imu_msg = convert_oxts_to_imu_msg(oxts_parsed_array, timestamp);
       rclcpp::Time tmp2 = rclcpp::Time(timestamp.nanoseconds() + 20);
-      writer_->write(img_msg, "kitti/oxts/imu", tmp2);
-    } else if (dir == "velodyne_points") {
+      writer_->write(imu_msg, "kitti/oxts/imu", tmp2);
+
+      // Calculate TFs
+      // Static TFs
+      // You cant write to "/tf_static" in ROS Humble
+      // It requires QOS override which is not available
+      /*
+      if(!set_static_tfs_)
+      {
+        tf2_msgs::msg::TFMessage final_static_tfs;
+        auto tf_imu_velo_link
+          = static_transform(tf_imu_velo_file, "base_link", "velo_link");
+        auto tf_velo_cam_link
+          = static_transform(tf_velo_cam_file, "base_link", "cam0_link");
+
+        final_static_tfs.transforms.push_back(tf_imu_velo_link.transforms[0]);
+        final_static_tfs.transforms.push_back(tf_velo_cam_link.transforms[0]);
+
+        writer_->write(final_static_tfs, "/tf_static", rclcpp::Time(0));
+
+        set_static_tfs_ = true;
+      }
+      */
+      // Dynamic TF
+      // Assumming gps_link/imu_link are the base_link
+      // The map frame would be on the first lat, lon, & alt of the oxts data
+      auto tf_map_to_base_link = map_to_base_link_tf(gps_msg, imu_msg, timestamp);
+      writer_->write(tf_map_to_base_link, "/tf", timestamp);
+    }
+    else if(dir == "velodyne_points")
+    {
       auto msg = convert_velo_to_msg(filename, timestamp);
       writer_->write(msg, "kitti/velo", timestamp);
     }
@@ -110,38 +165,182 @@ void Kitti2BagNode::on_timer_callback()
 
   RCLCPP_INFO(this->get_logger(), "Writing index = %ld", index_);
   ++index_;
-  if (index_ == max_index_) {
+  if(index_ == max_index_)
+  {
     timer_->cancel();
     rclcpp::shutdown();
   }
 }
 
+tf2_msgs::msg::TFMessage Kitti2BagNode::static_transform(const std::string &tf_imu_velo,
+                                                         const std::string &parent_frame,
+                                                         const std::string &child_frame)
+{
+  tf2_msgs::msg::TFMessage imu_velo_transform;
+  std::vector<double> rot_vec(9);
+  std::vector<double> trans_vec(3);
+  // open the file
+  std::ifstream input_file(tf_imu_velo);
+  if(!input_file.is_open())
+  {
+    RCLCPP_ERROR(get_logger(), "Unable to open file calib_cam_to_cam.txt");
+    rclcpp::shutdown();
+  }
+
+  std::string line;
+  std::string tmp_str;
+  while(std::getline(input_file, line))
+  {
+    std::size_t pos = line.find(':');
+    if(pos != std::string::npos)
+    {
+      std::string key = line.substr(0, pos);
+      std::string value = line.substr(pos + 1);
+
+      // Trim leading and trailing whitespaces
+      key.erase(0, key.find_first_not_of(" \t\r\n"));
+      key.erase(key.find_last_not_of(" \t\r\n") + 1);
+      value.erase(0, value.find_first_not_of(" \t\r\n"));
+      value.erase(value.find_last_not_of(" \t\r\n") + 1);
+
+      // get the value of the calibration and put them into stringstream
+      std::stringstream ss(value);
+
+      int j = 0;
+      if(key == "R")
+      {
+        while(getline(ss, tmp_str, ' '))
+        {
+          rot_vec[j] = std::stod(tmp_str);
+          ++j;
+        }
+      }
+      else if(key == "T")
+      {
+        while(getline(ss, tmp_str, ' '))
+        {
+          trans_vec[j] = std::stod(tmp_str);
+          ++j;
+        }
+      }
+    }
+  }
+
+  // Convert to Eigen 3x3 Rotation matrix
+  // Then to quaterniond
+  Eigen::Map<const Eigen::Matrix<double, 3, 3, Eigen::RowMajor>> rot_mat(rot_vec.data());
+  Eigen::Quaterniond quat(rot_mat);
+
+  geometry_msgs::msg::TransformStamped tf_msg;
+  tf_msg.header.stamp = rclcpp::Time(0);
+  tf_msg.header.frame_id = parent_frame;
+  tf_msg.child_frame_id = child_frame;
+
+  // Translation
+  tf_msg.transform.translation.x = trans_vec.at(0);
+  tf_msg.transform.translation.y = trans_vec.at(1);
+  tf_msg.transform.translation.z = trans_vec.at(2);
+
+  // Rotation
+  tf_msg.transform.rotation.x = quat.x();
+  tf_msg.transform.rotation.y = quat.y();
+  tf_msg.transform.rotation.z = quat.z();
+  tf_msg.transform.rotation.w = quat.w();
+
+  imu_velo_transform.transforms.push_back(tf_msg);
+
+  return imu_velo_transform;
+}
+
+tf2_msgs::msg::TFMessage
+Kitti2BagNode::map_to_base_link_tf(const sensor_msgs::msg::NavSatFix &gps_msg,
+                                   const sensor_msgs::msg::Imu &imu_msg,
+                                   const rclcpp::Time &timestamp)
+{
+  tf2_msgs::msg::TFMessage final_transform;
+  // Set the start of the oxts gps co-ordantes as the local map frame
+  if(!set_origin_utm_)
+  {
+    origin_utm_ = lla_to_utm(gps_msg.latitude, gps_msg.longitude, gps_msg.altitude);
+    set_origin_utm_ = true;
+  }
+
+  // Convert the current gps co-ordiante into utm
+  geodesy::UTMPoint curr_utm
+    = lla_to_utm(gps_msg.latitude, gps_msg.longitude, gps_msg.altitude);
+
+  // Get the translational difference
+  double x = curr_utm.easting - origin_utm_.easting;
+  double y = curr_utm.northing - origin_utm_.northing;
+  double z = curr_utm.altitude - origin_utm_.altitude;
+
+  // Fill up Transform stamped
+  geometry_msgs::msg::TransformStamped transform_stamped;
+  transform_stamped.header.stamp = timestamp;
+  transform_stamped.header.frame_id = "/map";      // parent frame
+  transform_stamped.child_frame_id = "/base_link"; // child frame
+
+  // Fill translation
+  transform_stamped.transform.translation.x = x;
+  transform_stamped.transform.translation.y = y;
+  transform_stamped.transform.translation.z = z;
+
+  // Fill rotation from IMU orientation
+  transform_stamped.transform.rotation = imu_msg.orientation;
+
+  final_transform.transforms.push_back(transform_stamped);
+
+  return final_transform;
+}
+
+geodesy::UTMPoint Kitti2BagNode::lla_to_utm(double lat, double lon, double alt)
+{
+  // Initialize geo point
+  geographic_msgs::msg::GeoPoint target_geo;
+  target_geo.latitude = lat;
+  target_geo.longitude = lon;
+  target_geo.altitude = alt;
+
+  // Convert to UTM co-ordinates
+  geodesy::UTMPoint result_utm(target_geo);
+
+  return result_utm;
+}
+
 void Kitti2BagNode::get_filenames()
 {
-  for (auto & dir : dirs_) {
+  for(auto &dir : dirs_)
+  {
     std::vector<std::string> filenames_vec{};
-    try {
+    try
+    {
       fs::path directory_path = kitti_path_ / data_folder_ / dir / "data";
-      if (fs::is_directory(directory_path)) {
-        for (const auto & entry : fs::directory_iterator(directory_path)) {
-          if (entry.is_regular_file()) {
+      if(fs::is_directory(directory_path))
+      {
+        for(const auto &entry : fs::directory_iterator(directory_path))
+        {
+          if(entry.is_regular_file())
+          {
             filenames_vec.push_back(entry.path().filename().string());
           }
         }
         // sort the filename
-        std::sort(
-          filenames_vec.begin(), filenames_vec.end(),
-          [](const auto & lhs, const auto & rhs) {
-            return lhs < rhs;
-          });
-      } else {
+        std::sort(filenames_vec.begin(), filenames_vec.end(),
+                  [](const auto &lhs, const auto &rhs) { return lhs < rhs; });
+      }
+      else
+      {
         RCLCPP_ERROR(get_logger(), "Error: The specified path is not a directory.");
         rclcpp::shutdown();
       }
-    } catch (const fs::filesystem_error & e) {
+    }
+    catch(const fs::filesystem_error &e)
+    {
       RCLCPP_ERROR(get_logger(), "Filesystem error: %s", e.what());
       rclcpp::shutdown();
-    } catch (const std::exception & e) {
+    }
+    catch(const std::exception &e)
+    {
       RCLCPP_ERROR(get_logger(), "Error: %s", e.what());
       rclcpp::shutdown();
     }
@@ -149,12 +348,13 @@ void Kitti2BagNode::get_filenames()
   }
 
   // make sure all folders have the same number of files
-  for (size_t i = 0; i < filenames_.size() - 1; ++i) {
-    if (filenames_[i].size() != filenames_[i + 1].size()) {
-      RCLCPP_ERROR(
-        get_logger(),
-        "File size in %s (%ld) and %s (%ld) don't match.",
-        dirs_[i].c_str(), filenames_[i].size(), dirs_[i + 1].c_str(), filenames_[i + 1].size());
+  for(size_t i = 0; i < filenames_.size() - 1; ++i)
+  {
+    if(filenames_[i].size() != filenames_[i + 1].size())
+    {
+      RCLCPP_ERROR(get_logger(), "File size in %s (%ld) and %s (%ld) don't match.",
+                   dirs_[i].c_str(), filenames_[i].size(), dirs_[i + 1].c_str(),
+                   filenames_[i + 1].size());
       rclcpp::shutdown();
     }
   }
@@ -163,23 +363,27 @@ void Kitti2BagNode::get_filenames()
 
 void Kitti2BagNode::get_all_timestamps()
 {
-  for (auto & dir : dirs_) {
+  for(auto &dir : dirs_)
+  {
     std::vector<rclcpp::Time> timestamps_vec{};
 
     // open the file
     std::ifstream input_file(kitti_path_ / data_folder_ / dir / "timestamps.txt");
-    if (!input_file.is_open()) {
+    if(!input_file.is_open())
+    {
       RCLCPP_ERROR(get_logger(), "Unable to open file timestamps.txt");
       rclcpp::shutdown();
     }
 
     std::string line;
-    while (std::getline(input_file, line)) {
+    while(std::getline(input_file, line))
+    {
       // Convert timestamp string to std::chrono::time_point
       std::tm tm = {};
       std::istringstream iss(line);
       iss >> std::get_time(&tm, "%Y-%m-%d %H:%M:%S.");
-      if (iss.fail()) {
+      if(iss.fail())
+      {
         RCLCPP_ERROR(get_logger(), "Failed to parse timestamp.");
         rclcpp::shutdown();
       }
@@ -187,7 +391,8 @@ void Kitti2BagNode::get_all_timestamps()
       // Extract microseconds and convert to duration
       std::chrono::nanoseconds::rep nanoSecondsCount;
       iss >> nanoSecondsCount;
-      if (iss.fail()) {
+      if(iss.fail())
+      {
         RCLCPP_ERROR(get_logger(), "Failed to parse microseconds.");
         rclcpp::shutdown();
       }
@@ -197,8 +402,9 @@ void Kitti2BagNode::get_all_timestamps()
       auto timePoint = std::chrono::system_clock::from_time_t(std::mktime(&tm));
 
       // Convert time_point to epoch time (seconds since 1970-01-01)
-      auto epochTime =
-        std::chrono::duration_cast<std::chrono::seconds>(timePoint.time_since_epoch()).count();
+      auto epochTime
+        = std::chrono::duration_cast<std::chrono::seconds>(timePoint.time_since_epoch())
+            .count();
 
       timestamps_vec.push_back(rclcpp::Time(epochTime, nanoseconds));
     }
@@ -206,9 +412,10 @@ void Kitti2BagNode::get_all_timestamps()
   }
 }
 
-sensor_msgs::msg::Image Kitti2BagNode::convert_image_to_msg(
-  const fs::path & file_path, const rclcpp::Time & timestamp,
-  const std::string & encoding, const std::string & frame_id)
+sensor_msgs::msg::Image Kitti2BagNode::convert_image_to_msg(const fs::path &file_path,
+                                                            const rclcpp::Time &timestamp,
+                                                            const std::string &encoding,
+                                                            const std::string &frame_id)
 {
   cv::Mat image = cv::imread(file_path, cv::IMREAD_UNCHANGED);
   auto msg = cv_bridge::CvImage(std_msgs::msg::Header(), encoding, image).toImageMsg();
@@ -218,31 +425,35 @@ sensor_msgs::msg::Image Kitti2BagNode::convert_image_to_msg(
   return *msg;
 }
 
-std::vector<std::string> Kitti2BagNode::parse_file_data(
-  const fs::path & file_path, std::string delimiter)
+std::vector<std::string>
+Kitti2BagNode::parse_file_data(const fs::path &file_path, std::string delimiter)
 {
   std::ifstream input_file(file_path);
 
-  if (!input_file.good()) {
+  if(!input_file.good())
+  {
     RCLCPP_ERROR(this->get_logger(), "Could not read OXTS data. Check your file path!");
     rclcpp::shutdown();
   }
 
   std::string file_content_string;
-  if (input_file) {
+  if(input_file)
+  {
     std::ostringstream ss;
     ss << input_file.rdbuf(); // reading data
     file_content_string = ss.str();
   }
 
-  //https://www.codegrepper.com/code-examples/whatever/c%2B%2B+how+to+tokenize+a+string
+  // https://www.codegrepper.com/code-examples/whatever/c%2B%2B+how+to+tokenize+a+string
   std::vector<std::string> tokens;
   size_t first = 0;
-  while (first < file_content_string.size()) {
+  while(first < file_content_string.size())
+  {
     size_t second = file_content_string.find_first_of(delimiter, first);
-    //first has index of start of token
-    //second has index of end of token + 1;
-    if (second == std::string::npos) {
+    // first has index of start of token
+    // second has index of end of token + 1;
+    if(second == std::string::npos)
+    {
       second = file_content_string.size();
     }
     std::string token = file_content_string.substr(first, second - first);
@@ -254,8 +465,7 @@ std::vector<std::string> Kitti2BagNode::parse_file_data(
 }
 
 sensor_msgs::msg::NavSatFix Kitti2BagNode::convert_oxts_to_gps_msg(
-  const std::vector<std::string> & oxts_tokenized_array,
-  const rclcpp::Time & timestamp)
+  const std::vector<std::string> &oxts_tokenized_array, const rclcpp::Time &timestamp)
 {
   sensor_msgs::msg::NavSatFix msg;
   msg.header.stamp = timestamp;
@@ -278,14 +488,14 @@ sensor_msgs::msg::NavSatFix Kitti2BagNode::convert_oxts_to_gps_msg(
   msg.position_covariance[7] = 0.0f;
   msg.position_covariance[8] = std::atof(oxts_tokenized_array[23].c_str());
 
-  msg.position_covariance_type = sensor_msgs::msg::NavSatFix::COVARIANCE_TYPE_APPROXIMATED;
+  msg.position_covariance_type
+    = sensor_msgs::msg::NavSatFix::COVARIANCE_TYPE_APPROXIMATED;
 
   return msg;
 }
 
 geometry_msgs::msg::TwistStamped Kitti2BagNode::convert_oxts_to_vel_msg(
-  const std::vector<std::string> & oxts_tokenized_array,
-  const rclcpp::Time & timestamp)
+  const std::vector<std::string> &oxts_tokenized_array, const rclcpp::Time &timestamp)
 {
   geometry_msgs::msg::TwistStamped msg;
   msg.header.stamp = timestamp;
@@ -303,21 +513,23 @@ geometry_msgs::msg::TwistStamped Kitti2BagNode::convert_oxts_to_vel_msg(
 }
 
 sensor_msgs::msg::Imu Kitti2BagNode::convert_oxts_to_imu_msg(
-  const std::vector<std::string> & oxts_tokenized_array,
-  const rclcpp::Time & timestamp)
+  const std::vector<std::string> &oxts_tokenized_array, const rclcpp::Time &timestamp)
 {
   sensor_msgs::msg::Imu msg;
   msg.header.stamp = timestamp;
   msg.header.frame_id = "oxts_link";
 
-  // - roll:  roll angle (rad),  0 = level, positive = left side up,      range: -pi   .. +pi
-  // - pitch: pitch angle (rad), 0 = level, positive = front down,        range: -pi/2 .. +pi/2
-  // - yaw:   heading (rad),     0 = east,  positive = counter clockwise, range: -pi   .. +pi
+  // - roll:  roll angle (rad),  0 = level, positive = left side up,      range: -pi
+  // .. +pi
+  // - pitch: pitch angle (rad), 0 = level, positive = front down,        range:
+  // -pi/2
+  // .. +pi/2
+  // - yaw:   heading (rad),     0 = east,  positive = counter clockwise, range: -pi
+  // .. +pi
   tf2::Quaternion orientation;
-  orientation.setRPY(
-    std::atof(oxts_tokenized_array[3].c_str()),
-    std::atof(oxts_tokenized_array[4].c_str()),
-    std::atof(oxts_tokenized_array[5].c_str()));
+  orientation.setRPY(std::atof(oxts_tokenized_array[3].c_str()),
+                     std::atof(oxts_tokenized_array[4].c_str()),
+                     std::atof(oxts_tokenized_array[5].c_str()));
   msg.orientation = tf2::toMsg(orientation);
 
   // - wf:    angular rate around forward axis (rad/s)
@@ -337,25 +549,27 @@ sensor_msgs::msg::Imu Kitti2BagNode::convert_oxts_to_imu_msg(
   return msg;
 }
 
-sensor_msgs::msg::PointCloud2 Kitti2BagNode::convert_velo_to_msg(
-  const fs::path & file_path, const rclcpp::Time & timestamp)
+sensor_msgs::msg::PointCloud2
+Kitti2BagNode::convert_velo_to_msg(const fs::path &file_path,
+                                   const rclcpp::Time &timestamp)
 {
   pcl::PointCloud<pcl::PointXYZI> cloud;
   std::fstream input_file(file_path, std::ios::in | std::ios::binary);
-  if (!input_file.good()) {
-    RCLCPP_ERROR(
-      this->get_logger(),
-      "Could not read Velodyne's point cloud. Check your file path!");
+  if(!input_file.good())
+  {
+    RCLCPP_ERROR(this->get_logger(),
+                 "Could not read Velodyne's point cloud. Check your file path!");
     rclcpp::shutdown();
   }
 
   input_file.seekg(0, std::ios::beg);
-  while (input_file.good() && !input_file.eof()) {
+  while(input_file.good() && !input_file.eof())
+  {
     pcl::PointXYZI point;
-    input_file.read((char *) &point.x, sizeof(float));
-    input_file.read((char *) &point.y, sizeof(float));
-    input_file.read((char *) &point.z, sizeof(float));
-    input_file.read((char *) &point.intensity, sizeof(float));
+    input_file.read((char *)&point.x, sizeof(float));
+    input_file.read((char *)&point.y, sizeof(float));
+    input_file.read((char *)&point.z, sizeof(float));
+    input_file.read((char *)&point.intensity, sizeof(float));
     cloud.push_back(point);
   }
 
@@ -367,13 +581,15 @@ sensor_msgs::msg::PointCloud2 Kitti2BagNode::convert_velo_to_msg(
   return msg;
 }
 
-sensor_msgs::msg::CameraInfo Kitti2BagNode::convert_calib_to_msg(
-  const std::string & calib_file, const rclcpp::Time & timestamp,
-  const std::string & id, const std::string & frame_id)
+sensor_msgs::msg::CameraInfo
+Kitti2BagNode::convert_calib_to_msg(const std::string &calib_file,
+                                    const rclcpp::Time &timestamp, const std::string &id,
+                                    const std::string &frame_id)
 {
   // open the file
   std::ifstream input_file(calib_file);
-  if (!input_file.is_open()) {
+  if(!input_file.is_open())
+  {
     RCLCPP_ERROR(get_logger(), "Unable to open file calib_cam_to_cam.txt");
     rclcpp::shutdown();
   }
@@ -382,9 +598,11 @@ sensor_msgs::msg::CameraInfo Kitti2BagNode::convert_calib_to_msg(
 
   std::string line;
   std::string tmp_str;
-  while (std::getline(input_file, line)) {
+  while(std::getline(input_file, line))
+  {
     std::size_t pos = line.find(':');
-    if (pos != std::string::npos) {
+    if(pos != std::string::npos)
+    {
       std::string key = line.substr(0, pos);
       std::string value = line.substr(pos + 1);
 
@@ -398,27 +616,41 @@ sensor_msgs::msg::CameraInfo Kitti2BagNode::convert_calib_to_msg(
       std::stringstream ss(value);
 
       int j = 0;
-      if (key == "K_0" + id) {
-        while (getline(ss, tmp_str, ' ')) {
+      if(key == "K_0" + id)
+      {
+        while(getline(ss, tmp_str, ' '))
+        {
           calib.K[j] = std::stod(tmp_str);
           ++j;
         }
-      } else if (key == "D_0" + id) {
-        while (getline(ss, tmp_str, ' ')) {
+      }
+      else if(key == "D_0" + id)
+      {
+        while(getline(ss, tmp_str, ' '))
+        {
           calib.D.push_back(std::stod(tmp_str));
         }
-      } else if (key == "S_rect_0" + id) {
-        while (getline(ss, tmp_str, ' ')) {
+      }
+      else if(key == "S_rect_0" + id)
+      {
+        while(getline(ss, tmp_str, ' '))
+        {
           calib.S_rect[j] = std::stod(tmp_str);
           ++j;
         }
-      } else if (key == "R_rect_0" + id) {
-        while (getline(ss, tmp_str, ' ')) {
+      }
+      else if(key == "R_rect_0" + id)
+      {
+        while(getline(ss, tmp_str, ' '))
+        {
           calib.R_rect[j] = std::stod(tmp_str);
           ++j;
         }
-      } else if (key == "P_rect_0" + id) {
-        while (getline(ss, tmp_str, ' ')) {
+      }
+      else if(key == "P_rect_0" + id)
+      {
+        while(getline(ss, tmp_str, ' '))
+        {
           calib.P_rect[j] = std::stod(tmp_str);
           ++j;
         }
