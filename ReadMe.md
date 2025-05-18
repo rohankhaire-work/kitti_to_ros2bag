@@ -19,7 +19,7 @@ The current version of this repository only supports the conversion of KITTI raw
     * *data_folder*: indicates the data folder
     * *calib_folder*: indicates the calibation folder. By default the calibration files are under kitti_path. If you put the calibration files into a different folder, then you will have to change this value.
     * *dirs*: designates the directories to be written into the bag
-
+    * *note* - the *dirs* should contain *oxts* for dynamic TF (map->base_link)
     For example:
 
     ```yaml
