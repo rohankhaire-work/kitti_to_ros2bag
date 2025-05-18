@@ -3,6 +3,11 @@ As I couldn't find any package on GitHub for directly converting raw KITTI data 
 
 The current version of this repository only supports the conversion of KITTI raw data into ROS2 bag. Contributions are welcome.
 
+# Contributions #
+1. Added Dynamic TF from map->base_link.
+2. Added Static TFs for velodyne and the cameras w.r.t the base_link. (defined as static transforms in the launch file).
+3. Added URDF and vehicle mesh for visualizing vehicle (Aesthetic).
+
 ## How to use it?
 1. Download the [raw data](https://www.cvlibs.net/datasets/kitti/raw_data.php) from KITTI website and unzip the downloaded file.
 2. clone this repo under your **{ros2_workspace}/src** folder.
