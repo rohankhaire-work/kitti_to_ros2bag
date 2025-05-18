@@ -53,10 +53,10 @@ target_compile_features(kitti_to_ros2bag_node PUBLIC c_std_99 cxx_std_17)  # Req
 install(TARGETS kitti_to_ros2bag_node
   DESTINATION lib/${PROJECT_NAME})
 
-install(DIRECTORY launch
+install(DIRECTORY launch mesh urdf
   DESTINATION share/${PROJECT_NAME})
 
-install(DIRECTORY params
+install(DIRECTORY params rviz
   DESTINATION share/${PROJECT_NAME})
 
 if(BUILD_TESTING)

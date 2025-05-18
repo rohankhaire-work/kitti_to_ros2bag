@@ -3,6 +3,10 @@ from launch.actions import DeclareLaunchArgument, ExecuteProcess
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
+from ament_index_python.packages import get_package_share_directory
+import os
+import xacro
+
 
 def generate_launch_description():
     bag_path_arg = DeclareLaunchArgument(
@@ -61,6 +65,43 @@ def generate_launch_description():
         output='screen'
     )
 
+    # Define package name and URDF file
+    package_name = 'kitti_to_ros2bag'
+    xacro_file_name = 'vehicle.xacro'
+
+    # Get the path to the URDF file
+    xacro_path = os.path.join(
+        get_package_share_directory(package_name),
+        'urdf',
+        xacro_file_name
+    )
+
+    # Process xacro to generate URDF
+    robot_description_config = xacro.process_file(xacro_path).toxml()
+    vehicle_sim = Node(
+        package='robot_state_publisher',
+        executable='robot_state_publisher',
+        name='robot_state_publisher',
+        output='screen',
+        parameters=[{'robot_description': robot_description_config}]
+    )
+
+    rviz_config_file = 'kitti.rviz'
+    # Get the full path to the installed rviz config file
+    rviz_config_path = os.path.join(
+        get_package_share_directory(package_name),
+        'rviz',
+        rviz_config_file
+    )
+
+    rviz_launch = Node(
+        package='rviz2',
+        executable='rviz2',
+        name='rviz2',
+        output='screen',
+        arguments=['-d', rviz_config_path]
+    )
+
     return LaunchDescription([
         bag_path_arg,
         static_velo,
@@ -68,5 +109,7 @@ def generate_launch_description():
         static_cam1,
         static_cam2,
         static_cam3,
-        play_bag
+        play_bag,
+        vehicle_sim,
+        rviz_launch
     ])

@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<robot name="car" xmlns:xacro="http://ros.org/wiki/xacro">
+  <xacro:property name="car" value="${vehicle_model}"></xacro:property>
+  <!-- vehicle body -->
+  <link name="base_link">
+    <visual>
+      <origin rpy="0 0 1.571" xyz="1.08 -0.32 -0.93"></origin>
+      <geometry>
+        <mesh filename="package://kitti_to_ros2bag/mesh/VW.dae" scale="0.082 0.08 0.076"></mesh>
+      </geometry>
+    </visual>
+  </link>
+</robot>
