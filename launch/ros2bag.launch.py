@@ -65,6 +65,14 @@ def generate_launch_description():
         output='screen'
     )
 
+    static_imu = Node(
+        package='tf2_ros',
+        executable='static_transform_publisher',
+        name='velo_to_imu',
+        arguments=['-0.81', '0.32', '-0.8', '0.0',
+                   '0.0', '0.0', 'velo_link', 'imu_link']
+    )
+
     # Define package name and URDF file
     package_name = 'kitti_to_ros2bag'
     xacro_file_name = 'vehicle.xacro'
@@ -109,6 +117,7 @@ def generate_launch_description():
         static_cam1,
         static_cam2,
         static_cam3,
+        static_imu,
         play_bag,
         vehicle_sim,
         rviz_launch

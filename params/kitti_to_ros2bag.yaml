@@ -1,6 +1,6 @@
 kitti_to_ros2bag_node:
   ros__parameters:
-    kitti_path: "/home/ws/src/mono-depth/test_bag/2011_09_26"
+    kitti_path: "/home/ws/src/kitti_to_ros2bag/test_bags/2011_09_26"
     data_folder: "2011_09_26_drive_0015_sync"
     # this folder shall have image_00, image_01, image_02, image_03, oxts, and velodyne_points
     calib_folder: ""
